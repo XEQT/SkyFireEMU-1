@@ -15961,7 +15961,9 @@ bool Unit::SetCharmedBy(Unit* charmer, CharmType type, AuraApplication const* au
             case CHARM_TYPE_CONVERT:
                 break;
         }
+
     }
+
     return true;
 }
 

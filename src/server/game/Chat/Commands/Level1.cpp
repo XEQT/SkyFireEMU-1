@@ -126,6 +126,7 @@ bool ChatHandler::HandleGMNotifyCommand(const char* args)
 //Summon Player
 bool ChatHandler::HandleSummonCommand(const char* args)
 {
+    sLog->outBasic("Handle Summon Command");
     Player* target;
     uint64 target_guid;
     std::string target_name;
@@ -133,13 +134,23 @@ bool ChatHandler::HandleSummonCommand(const char* args)
         return false;
 
     Player* _player = _session->GetPlayer();
+    if(_player->IsPlayerbot() )
+    {
+        sLog->outString("Its a Bot we are talking about");
+        _player->TeleportTo(*target);
+    }
+    if(target->IsPlayerbot() )
+    {
+        sLog->outString("Its a Bot we are talking about");
+        _player->TeleportTo(*_player);
+    }
     if (target == _player || target_guid == _player->GetGUID())
     {
         PSendSysMessage(LANG_CANT_TELEPORT_SELF);
         SetSentErrorMessage(true);
         return false;
     }
-
+    
     if (target)
     {
         std::string nameLink = playerLink(target_name);
@@ -155,7 +166,6 @@ bool ChatHandler::HandleSummonCommand(const char* args)
         }
 
         Map* map = _session->GetPlayer()->GetMap();
-
         if (map->IsBattlegroundOrArena())
         {
             // only allow if gm mode is on

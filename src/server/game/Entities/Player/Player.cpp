@@ -78,7 +78,11 @@
 #include "DBCEnums.h"
 #include "DB2Stores.h"
 #include "Object.h"
-
+// Playerbot mod
+#include "CreatureAIFactory.h"
+#include "Config.h"
+#include "PlayerbotAI.h"
+#include "PlayerbotClassAI.h"
 #include <cmath>
 
 #define ZONE_UPDATE_INTERVAL (1*IN_MILLISECONDS)
@@ -654,11 +658,15 @@ UpdateMask Player::updateVisualBits;
 #ifdef _MSC_VER
 #pragma warning(disable:4355)
 #endif
-Player::Player(WorldSession* session): Unit(true), _achievementMgr(this), _reputationMgr(this)
-{
+// Player::Player(WorldSession* session): Unit(true), _achievementMgr(this), _reputationMgr(this)
+// {
 #ifdef _MSC_VER
 #pragma warning(default:4355)
 #endif
+Player::Player (WorldSession *session): Unit(this), _achievementMgr(this), _reputationMgr(this), m_MaxPlayerbots(9), m_bot_died(false)
+{
+   // Playerbot mod
+   m_playerbotAI = NULL;
 
     _speakTime = 0;
     _speakCount = 0;
@@ -870,6 +878,22 @@ Player::Player(WorldSession* session): Unit(true), _achievementMgr(this), _reput
     _ChampioningFaction = 0;
     _ChampioningFactionDungeonLevel = 0;
 
+    ///////////////////// Bot System ////////////////////////
+    m_botTimer = 0;
+    m_bot = NULL;
+    m_bot_form = 0;
+    m_bot_race = 0;
+    m_bot_class = 0;
+    m_bot_must_wait_for_spell_1 = 0;
+    m_bot_must_wait_for_spell_2 = 0;
+    m_bot_must_wait_for_spell_3 = 0;
+    m_bot_must_be_created = false;
+    m_bot_must_die = false;
+    m_bot_entry_must_be_created = 0;
+    m_bot_class_must_be_created = 0;
+    m_bot_race_must_be_created = 0;
+    m_bot_entry = 0;
+
     for (uint8 i = 0; i < MAX_POWERS; ++i)
         _powerFraction[i] = 0;
 
@@ -913,6 +937,12 @@ Player::~Player ()
 
     delete _declinedname;
     delete _runes;
+    //Playerbot mod: remove AI if exists
+    if(m_playerbotAI != NULL)
+    {
+        delete m_playerbotAI;
+        m_playerbotAI = NULL;
+    }
 
     sWorld->DecreasePlayerCount();
 }
@@ -926,6 +956,15 @@ void Player::CleanupsBeforeDelete(bool finalCleanup)
 
     if (_transport)
         _transport->RemovePassenger(this);
+
+    if(GetGroup() && HaveBot())
+    {
+         Creature *m_bot = GetBot();
+         Group *m_group = GetGroup();
+         m_bot->SetCharmerGUID(0);
+         m_bot->RemoveFromWorld();
+         RemoveBot();
+    }
 
     // clean up player-instance binds, may unload some instance saves
     for (uint8 i = 0; i < MAX_DIFFICULTY; ++i)
@@ -1714,6 +1753,16 @@ void Player::Update(uint32 p_time)
         else
             _timeSyncTimer -= p_time;
     }
+    //want to refresh bot even if we're dead so
+    //it can rez me
+
+    if(m_botTimer > 0)
+    {
+        if(p_time >= m_botTimer)
+            m_botTimer = 0;
+        else
+            m_botTimer -= p_time;
+    }
 
     if (isAlive())
     {
@@ -1808,6 +1857,10 @@ void Player::Update(uint32 p_time)
     //because we don't want player's ghost teleported from graveyard
     if (IsHasDelayedTeleport() && isAlive())
         TeleportTo(_teleport_dest, _teleport_options);
+
+    //Playerbot mod: this was added as part of the Playerbot mod,
+    if(m_playerbotAI != NULL) m_playerbotAI->UpdateAI(p_time);
+
 }
 
 void Player::setDeathState(DeathState s)
@@ -2067,7 +2120,7 @@ void Player::SendTeleportPacket(Position &oldPos)
     WorldPacket data2(MSG_MOVE_TELEPORT, 38);
     data2.append(GetPackGUID());
     BuildMovementPacket(&data2);
-    Relocate(&oldPos);
+    if (!this->IsPlayerbot()) Relocate(&oldPos);
     SendMessageToSet(&data2, false);
 }
 
@@ -2094,6 +2147,14 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
         sLog->outError("Player (GUID: %u, name: %s) tried to enter a forbidden map %u", GetGUIDLow(), GetName(), mapid);
         SendTransferAborted(mapid, TRANSFER_ABORT_MAP_NOT_ALLOWED);
         return false;
+    }
+
+    //Playerbot mod: if this user has bots, tell them to stop following master
+    //so they don't try to follow the master after the master teleports
+    for(PlayerBotMap::const_iterator itr = GetSession()->GetPlayerBotsBegin(); itr != GetSession()->GetPlayerBotsEnd(); ++itr)
+    {
+            Player *botPlayer = itr->second;
+            botPlayer->GetMotionMaster()->Clear();
     }
 
     // preparing unsummon pet if lost (we must get pet before teleportation or will not find it later)
@@ -2145,6 +2206,19 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
             _movementInfo.t_seat = -1;
         }
     }
+
+     //HACK ELSE CLIENT CRASH WHEN PLAYER IS TELEPORTED
+     if(GetGroup() && HaveBot())
+     {
+         //sLog->outError("Player::teleporting.. removing from group");
+
+         Group *m_group = GetGroup();
+         Creature *m_bot = GetBot();
+         m_bot->SetCharmerGUID(0);
+         m_bot->RemoveFromWorld();
+         RemoveBot();
+         SetBotMustBeCreated(m_bot_entry, newbotrace, newbotclass);
+     }
 
     // The player was ported to another map and loses the duel immediately.
     // We have to perform this check before the teleport, otherwise the
@@ -2765,7 +2839,7 @@ Creature* Player::GetNPCIfCanInteractWith(uint64 guid, uint32 npcflagmask)
                     return NULL;
 
     // not too far
-    if (!creature->IsWithinDistInMap(this, INTERACTION_DISTANCE))
+    if (!creature->IsWithinDistInMap(this, INTERACTION_DISTANCE) && !IsPlayerbot())
         return NULL;
 
     return creature;
@@ -2954,6 +3028,30 @@ void Player::RemoveFromGroup(Group* group, uint64 guid, RemoveMethod method /* =
 {
     if (group)
     {
+        Player *_player = ObjectAccessor::FindPlayer(guid);
+ 
+         if(_player!=NULL) {
+             WorldSession *session= _player->GetSession();
+          // Playerbot mod: if you remove yourself from a group, log out all playerbots
+
+          //save the map of playerbots first because if the map gets altered when
+          //a playerbot logs out which will corrupt the for loop
+          PlayerBotMap m_playerBots;
+          for(PlayerBotMap::const_iterator itr = session->GetPlayerBotsBegin(); itr != session->GetPlayerBotsEnd(); ++itr)
+          {
+              Player *bot = itr->second;
+              (m_playerBots)[itr->first] = bot;
+           }
+           for(PlayerBotMap::const_iterator itr2 = m_playerBots.begin(); itr2 != m_playerBots.end(); ++itr2)
+           {
+                Player *botPlayer = itr2->second;
+                if (!botPlayer) continue;
+
+                session->LogoutPlayerBot(botPlayer->GetGUID(),true);
+            }
+
+			if (!ObjectAccessor::FindPlayer(guid)->GetGroup() || group->GetMembersCount()==0) return;
+        }
         group->RemoveMember(guid, method, kicker, reason);
         group = NULL;
     }
@@ -15822,6 +15920,20 @@ bool Player::SatisfyQuestLevel(Quest const* qInfo, bool msg)
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ); // There doesn't seem to be a specific response for too high player level
         return false;
     }
+
+    //if I'm dead than need to remove bot manually
+    //This means I'm at the graveyard, but the bot or rest of the group
+    //finished off the mob
+    if(HaveBot() && m_bot->isAlive() && !isAlive())
+    {
+        m_bot->SetCharmerGUID(0);
+        m_bot->RemoveFromWorld();
+        RemoveBot();
+
+        //recreate it when you are alive again
+        SetBotMustBeCreated(m_bot_entry, newbotrace, newbotclass);
+    } //end if bot is alive and I'm not
+
     return true;
 }
 
@@ -15929,7 +16041,166 @@ bool Player::SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg)
 
     return false;
 }
+Player *Player::GetObjPlayer(uint64 guid)
+{
+    return ObjectAccessor::FindPlayer(guid);
+}
 
+void Player::RemoveBot()
+{
+    if(m_botHasPet && m_botsPet != NULL)
+    {
+        m_botsPet->SetCharmerGUID(0);
+        m_botsPet->CombatStop();
+        m_botsPet->DeleteFromDB();
+        m_botsPet->CleanupsBeforeDelete();
+        m_botsPet->AddObjectToRemoveList();
+    }
+    m_botsPet = NULL;
+    m_botHasPet = false;
+
+    m_bot->CombatStop();
+    m_bot->DeleteFromDB();
+    m_bot->CleanupsBeforeDelete();
+    m_bot->SetIAmABot(false); //this HAS to come after CleanupsBeforeDelete
+    m_bot->AddObjectToRemoveList();
+
+    m_bot = NULL; m_bot_class = 0; m_bot_race = 0; m_bot_form = 0;
+    m_bot_must_wait_for_spell_1 = 0; m_bot_must_wait_for_spell_2 = 0;
+    m_bot_must_wait_for_spell_3 = 0; m_bot_must_be_created = false;
+
+    if(m_bot_ai)
+    {
+        //delete m_bot_ai;
+        m_bot_ai = NULL;
+    }
+    m_bot_must_die = false;
+
+
+} //end RemoveBot
+
+Creature *Player::GetBotsPet(uint32 entry)
+{
+    Creature *pet = this->SummonCreature(entry, GetPositionX() + 10, GetPositionY() + 10, GetPositionZ(), 0, TEMPSUMMON_DEAD_DESPAWN, 0);
+
+    QueryResult result;
+
+    result = WorldDatabase.PQuery("SELECT hp, mana, armor, str, agi FROM pet_levelstats WHERE creature_entry = 1860 AND level=%u", this->getLevel());
+
+    if(result)
+    {
+        Field *fields = result->Fetch();
+        uint32 hp = fields[0].GetUInt32();
+        uint32 mana = fields[1].GetUInt32();
+        uint32 armor = fields[2].GetUInt32();
+        uint32 str = fields[3].GetUInt32();
+        uint32 agi = fields[4].GetUInt32();
+        //sLog->outError("hp = %u", hp);
+        //sLog->outError("mana = %u", mana);
+        //sLog->outError("str = %u", str);
+        //sLog->outError("agi = %u", agi);
+
+        pet->SetMaxHealth(hp);
+        pet->SetMaxPower(POWER_MANA, mana);
+        pet->SetArmor(armor);
+        pet->SetStat(STAT_STRENGTH, str);
+        pet->SetStat(STAT_AGILITY, agi);
+
+        //delete result;
+    }
+    pet->SetLevel(getLevel());
+
+    m_botHasPet = true;
+    m_botsPet = pet;
+
+    return pet;
+} //end GetBotsPet
+
+void Player::SetBotsPetDied()
+{
+    if(m_botHasPet && m_botsPet != NULL)
+    {
+        m_botsPet->SetCharmerGUID(0);
+        m_botsPet->CombatStop();
+        m_botsPet->DeleteFromDB();
+        m_botsPet->CleanupsBeforeDelete();
+        m_botsPet->AddObjectToRemoveList();
+    }
+
+    m_botsPet = NULL;
+    m_botHasPet = false;
+}
+
+//
+//This is called from script_bot_giver.cpp
+//
+uint8 Player::GetMaxPlayerBot()
+{
+    //load config variables
+    if(m_MaxPlayerbots > 9) m_MaxPlayerbots = ConfigMgr::GetIntDefault("Bot.MaxPlayerbots", 9);
+
+    return m_MaxPlayerbots;
+
+}
+
+//
+//This is called from script_bot_giver.cpp
+//
+void Player::CreatePlayerBot(std::string name)
+{
+    uint64 guid = sObjectMgr->GetPlayerGUIDByName(name.c_str());
+    if(_session->GetPlayerBot(guid) != NULL) return;
+    _session->AddPlayerBot(guid);
+}
+
+//
+//This is called from script_bot_giver.cpp
+//
+std::list<std::string> *Player::GetCharacterList()
+{
+    std::string plName;
+    QueryResult results;
+
+    results = CharacterDatabase.PQuery("SELECT name FROM characters WHERE account='%u' AND online=0", _session->GetAccountId());
+
+    if(!results) return NULL;
+
+    plName = (*results)[0].GetString();
+
+    std::list<std::string> *names = new std::list<std::string>;
+    do {
+        Field *fields = results->Fetch();
+        plName = fields[0].GetString();
+        if(plName.compare(GetName()) == 0) continue;
+        names->insert(names->end(), fields[0].GetString());
+    } while(results->NextRow());
+    return names;
+} //end GetCharacterList
+
+//Playerbot mod:
+void Player::SetPlayerbotAI(PlayerbotAI *ai)
+{
+    if(ai == NULL)
+    {
+        sLog->outError("Tried to assign playerbot AI to NULL; this is not supported!");
+        return;
+    }
+    if(GetPlayerbotAI() != NULL)
+    {
+        sLog->outError("Tried to reassign playerbot AI; this is not yet supported!");
+        return;
+    }
+    //assigning bot AI to normal players is not currently supported
+    if(!IsPlayerbot())
+    {
+        sLog->outError("Tried to set playerbot AI for a player that was not a bot.");
+        return;
+    }
+    m_playerbotAI = ai;
+
+    m_SaveOrgLocation = ConfigMgr::GetIntDefault("Bot.SaveOrgLocation", 0);
+}
+ 
 bool Player::SatisfyQuestRace(Quest const* qInfo, bool msg)
 {
     uint32 reqraces = qInfo->GetRequiredRaces();
@@ -16535,6 +16806,8 @@ void Player::KilledMonsterCredit(uint32 entry, uint64 guid)
             }
         }
     }
+    //Playerbot mod
+    if(m_playerbotAI != NULL) m_playerbotAI->KilledMonster(entry, guid);
 }
 
 void Player::KilledPlayerCredit()
@@ -16700,6 +16973,7 @@ void Player::TalkedToCreature(uint32 entry, uint64 guid)
                             _QuestStatusSave[questid] = true;
 
                             SendQuestUpdateAddCreatureOrGo(qInfo, guid, j, curTalkCount, addTalkCount);
+							if (IsPlayerbot()) this->GetPlayerbotAI()->TellMaster("Talked to quest guy.");
                         }
                         if (CanCompleteQuest(questid))
                             CompleteQuest(questid);
@@ -19281,6 +19555,25 @@ void Player::SaveToDB(bool create /*=false*/)
 
         if (!IsBeingTeleported())
         {
+            if (IsPlayerbot() && m_SaveOrgLocation == 1)
+            {
+               /* ss << m_playerbotAI->GetStartMapID() << ", "
+                << (uint32)m_playerbotAI->GetStartInstanceID() << ", "
+                << (uint32)m_playerbotAI->GetStartDifficulty() << ", "
+                << finiteAlways(m_playerbotAI->GetStartX()) << ", "
+                << finiteAlways(m_playerbotAI->GetStartY()) << ", "
+                << finiteAlways(m_playerbotAI->GetStartZ()) << ", "
+                << finiteAlways(m_playerbotAI->GetStartO()) << ", "; */
+                stmt->setUInt16(index++, (uint16)m_playerbotAI->GetStartMapID());
+                stmt->setUInt32(index++, (uint32)m_playerbotAI->GetStartInstanceID());
+                stmt->setUInt8(index++, (uint8)m_playerbotAI->GetStartDifficulty()); // (uint8(GetDungeonDifficulty()) | uint8(GetRaidDifficulty()) << 4));
+                stmt->setFloat(index++, finiteAlways(m_playerbotAI->GetStartX()));
+                stmt->setFloat(index++, finiteAlways(m_playerbotAI->GetStartY()));
+                stmt->setFloat(index++, finiteAlways(m_playerbotAI->GetStartZ()));
+                stmt->setFloat(index++, finiteAlways(m_playerbotAI->GetStartO()));
+            }
+            else
+            {
             stmt->setUInt16(index++, (uint16)GetMapId());
             stmt->setUInt32(index++, (uint32)GetInstanceId());
             stmt->setUInt8(index++, (uint8(GetDungeonDifficulty()) | uint8(GetRaidDifficulty()) << 4));
@@ -19288,6 +19581,7 @@ void Player::SaveToDB(bool create /*=false*/)
             stmt->setFloat(index++, finiteAlways(GetPositionY()));
             stmt->setFloat(index++, finiteAlways(GetPositionZ()));
             stmt->setFloat(index++, finiteAlways(GetOrientation()));
+            }
         }
         else
         {
@@ -20365,6 +20659,7 @@ void Player::StopCastingCharm()
     }
 }
 
+// inline void Player::BuildPlayerChat(WorldPacket *data, uint8 msgtype, const std::string& text, uint32 language) const
 inline void Player::BuildPlayerChat(WorldPacket *data, uint8 msgtype, const std::string& text, uint32 language) const
 {
     *data << uint8(msgtype);

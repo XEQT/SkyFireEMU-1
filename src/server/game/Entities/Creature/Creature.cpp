@@ -154,6 +154,9 @@ _creatureInfo(NULL), _creatureData(NULL), _formation(NULL), _path_id(0)
     for (uint8 i = 0; i < CREATURE_MAX_SPELLS; ++i)
         _spells[i] = 0;
 
+    is_a_bot = false;
+    bot_AI = NULL;
+ 
     _CreatureSpellCooldowns.clear();
     _CreatureCategoryCooldowns.clear();
     DisableReputationGain = false;
