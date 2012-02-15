@@ -4683,6 +4683,8 @@ void Player::InitVisibleBits()
     updateVisualBits.SetBit(OBJECT_FIELD_GUID);
     updateVisualBits.SetBit(OBJECT_FIELD_TYPE);
     updateVisualBits.SetBit(OBJECT_FIELD_ENTRY);
+    updateVisualBits.SetBit(OBJECT_FIELD_DATA + 0);
+    updateVisualBits.SetBit(OBJECT_FIELD_DATA + 1);
     updateVisualBits.SetBit(OBJECT_FIELD_SCALE_X);
     updateVisualBits.SetBit(UNIT_FIELD_CHARM + 0);
     updateVisualBits.SetBit(UNIT_FIELD_CHARM + 1);
@@ -6163,7 +6165,7 @@ void Player::UpdateRating(CombatRating cr)
             }
             break;
         case CR_MASTERY:                                    // Implemented in Player::UpdateMastery
-            UpdateMastery();
+            UpdateMasteryPercentage();
             break;
         case CR_ARMOR_PENETRATION:
             if (affectStats)
@@ -21509,8 +21511,6 @@ inline bool Player::_StoreOrEquipNewItem(uint32 vendorslot, uint32 item, uint8 c
     }
 
     ModifyMoney(-price);
-
-    // ModifyMoney(-price); why was this doubled?
 
     if (crItem->ExtendedCost)                            // case for new honor system
     {

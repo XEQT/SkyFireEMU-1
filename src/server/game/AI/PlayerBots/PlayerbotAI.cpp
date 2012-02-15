@@ -2203,7 +2203,7 @@ void PlayerbotAI::UpdateAI(const uint32 p_time)
     // if(m_IsFollowingMaster && m_bot->GetMapId() != m_master->GetMapId() && m_bot->GetZoneId() != m_master->GetZoneId())
     if(m_bot->GetMapId() != m_master->GetMapId() && m_bot->GetZoneId() != m_master->GetZoneId())
     {
-        sLog->outBasic("Master is in a new area not with me in it. GetMapID (Bot)[%u] (Master)[%u]", m_bot->GetMapId(), m_master->GetMapId());
+        sLog->outBasic("Master is in a new area and we ar not with the player in it. GetMapID (Bot)[%u] (Master)[%u]", m_bot->GetMapId(), m_master->GetMapId());
         m_bot->TeleportTo(*m_master);
         return;
     }

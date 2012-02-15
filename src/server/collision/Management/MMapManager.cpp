@@ -119,7 +119,7 @@ namespace MMAP
         // read header
         MmapTileHeader fileHeader;
         fread(&fileHeader, sizeof(MmapTileHeader), 1, file);
-        // sLog->outString("FileHeader[%u] MMAP_MAGIC [%u]", fileHeader.mmapMagic, MMAP_MAGIC);
+        sLog->outString("FileHeader[%u] MMAP_MAGIC [%u]", fileHeader.mmapMagic, MMAP_MAGIC);
         // sLog->outString("[%h]", fileHeader.mmapMagic);
         if (fileHeader.mmapMagic != MMAP_MAGIC)
         {

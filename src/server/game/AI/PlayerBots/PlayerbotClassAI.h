@@ -21,16 +21,16 @@ class Player;
 class PlayerbotAI;
 class Aura;
 
-        enum BotRole
-        {
-            BOT_ROLE_NONE,
-            BOT_ROLE_TANK,
-            BOT_ROLE_OFFTANK,
-            BOT_ROLE_DPS_RANGED,
-            BOT_ROLE_DPS_MELEE,
-            BOT_ROLE_SUPPORT,
-            BOT_ROLE_HEALER
-        };
+enum BotRole
+{
+    BOT_ROLE_NONE,
+    BOT_ROLE_TANK,
+    BOT_ROLE_OFFTANK,
+    BOT_ROLE_DPS_RANGED,
+    BOT_ROLE_DPS_MELEE,
+    BOT_ROLE_SUPPORT,
+    BOT_ROLE_HEALER
+};
 
 class PlayerbotClassAI
 {
